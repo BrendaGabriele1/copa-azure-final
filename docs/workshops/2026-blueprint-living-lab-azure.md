@@ -1,0 +1,578 @@
+# Blueprint — Workshop "Living Lab" Azure-Native sobre FIFA 2026 Tickets
+
+> **Documento de co-design produzido por:** Atlas (Analyst) em sessão com Guilherme Prux Campos · **Data:** 2026-05-24 · **Status:** Blueprint pronto para virar EPIC-002 via `@pm`.
+
+---
+
+## 1. Executive Summary
+
+**O quê:** Workshop educacional de **~40 horas** durante a Copa do Mundo FIFA 2026, no qual o aplicativo **FIFA 2026 Tickets** atua como **laboratório vivo** evoluindo fase a fase. Cada fase introduz uma capacidade Azure-native sob a forma de **microsserviço .NET**, **sem tocar no backend Node original**. O participante sai do workshop com aplicação modernizada em sua própria subscription Azure.
+
+**Por quê:** Ensinar Azure moderno (PaaS, serverless, mensageria, gateway, IAM, AI) num contexto material e progressivo — alunos não criam um "hello world" descartável; evoluem um produto real durante a Copa.
+
+**Como:** **6 fases cumulativas** (F1–F6), cada uma entregando uma branch Git executável via CI/CD do GitHub Actions, mais artefatos didáticos consistentes (README aluno, Portal Guide passo-a-passo, Speaker Notes, slides, vídeo intro, branch executável).
+
+**Custo do evento:** ~US$50-80 (APIM Developer compartilhado) + US$5-15 por aluno (Service Bus, Functions, Container Apps, App Insights). Mitigação obrigatória: Budget Alerts + script teardown ao final.
+
+**Próximo passo:** `@pm` cria **EPIC-002 — Living Lab Workshop** com 7 stories (6 fases + 1 transversal Flow Visualizer) referenciando este documento.
+
+---
+
+## 2. Visão da "Living Lab"
+
+### Conceito em uma frase
+
+> Cada fase do workshop (1...6) entrega aos alunos uma branch Git executável via CI/CD que evolui cumulativamente o FIFA 2026 Tickets agregando 1 capacidade Azure-native via microsserviço .NET; o sistema original (Node + React + SQL) permanece imutável e os novos serviços conversam com ele por contratos bem definidos, com uma UI de observabilidade dedicada mostrando o fluxo de cada compra atravessando os componentes em tempo real.
+
+### Forma material (arquitetura-alvo após F6)
+
+```
+┌──────────────────────────────────────────────────────────────────────┐
+│  Frontend Vite+React (intocado)                                       │
+│  + nova rota /flow → Flow Visualizer (UI didática)                    │
+└──────────────────────────────────────────────────────────────────────┘
+            │                                  │
+            │ compra v1 (original)             │ compra v2 (didática)
+            ▼                                  ▼
+┌─────────────────────────┐         ┌──────────────────────────────────┐
+│  Node/Express (intocado)│         │  APIM Developer (gateway)        │
+│  → SQL Server           │         │  → Function .NET (entrypoint)    │
+│                         │         │  → Service Bus (fila + DLQ)      │
+└─────────────────────────┘         │  → Function .NET (consumer)      │
+                                    │  → n8n (orquestração)            │
+                                    │  → SQL Server (mesma DB, marker) │
+                                    │  + Chatbot (LLM via MCP server)  │
+                                    │  + External ID (auth customer)   │
+                                    │  + App Registration (auth admin) │
+                                    │  + App Insights (correlation IDs)│
+                                    └──────────────────────────────────┘
+```
+
+### Princípio rector
+
+Todo aluno termina com o app rodando em sua subscription Azure, com o **fluxo v2 funcional** comparando lado-a-lado com o **fluxo v1 original** — o paralelismo é didático intencional ("antes vs depois").
+
+---
+
+## 3. Stack Azure-Native (decisões fechadas)
+
+| Componente | Tier | Custo estimado | Justificativa pedagógica |
+|---|---|---|---|
+| **Azure Service Bus** | Standard | ~US$10/mês base | Messaging assíncrono, queues, topics, DLQ |
+| **APIM** | **Developer** | ~US$50/mês flat (sem SLA) | Libera `rate-limit-by-key`, cache, transformations, JWT validation, VNet — superfície completa de policies |
+| **Azure Functions** | Consumption (.NET 8 isolated) | ~grátis em 1M execs/mês | Serverless, bindings, durable functions |
+| **n8n self-hosted** | Azure Container Apps (Consumption) | ~US$5-15/mês | Workflow automation low-code + ensina containers |
+| **Microsoft Entra External ID** | Free tier (50K MAU) | US$0 | CIAM moderno, OIDC, social login |
+| **App Registrations (Entra ID interno)** | Free | US$0 | OAuth2 auth code flow para camada admin |
+| **MCP Server** | Auto-hospedado em Function .NET | Incluído | Protocolo de tools para LLM — assunto-quente 2026 |
+| **Chatbot frontend** | Componente React | US$0 | Integração LLM no produto |
+| **LLM provider** | Google Gemini 2.0 Flash | US$0 | Único LLM moderno gratuito e estável em escala de turma; sem cartão, sem aprovação |
+| **Application Insights** | Pay-per-GB | ~US$0-5/mês | Observabilidade + fonte do Flow Visualizer |
+| **GitHub Actions** | Free tier público | US$0 | CI/CD por fase |
+| **Azure SignalR Service** | Free tier (20 conexões) | US$0 | Real-time do Flow Visualizer |
+
+### Cost Model
+
+- **Cenário A — APIM compartilhado** (1 instância Developer para todos os alunos, products/subscriptions por aluno): **~US$50-80 total** para todo o evento. ✅ Recomendado e adotado.
+- **Cenário B (rejeitado)** — APIM por aluno: inviável para grupos > 5.
+- **Demais recursos por aluno:** US$5-15 em 40h.
+- **Mitigação obrigatória:** Azure Budget Alert + script `teardown.ps1` que destrói RG inteiro ao final.
+
+---
+
+## 4. Phasing Detalhado
+
+### Visão geral das 6 fases (cumulativas)
+
+| # | Branch | Tempo | Tema | Novidade |
+|---|---|---|---|---|
+| F1 | `phase-01-servicebus-functions` | 6h | Mensageria desacoplada | Service Bus + Function entry + Function consumer |
+| F2 | `phase-02-apim` | 6h | Gateway profissional | APIM Developer + policies (rate-limit-by-key, cache, transformations) |
+| F3 | `phase-03-identity` | 6h | Identidade moderna | External ID (customer) + App Registration (admin) substituem JWT no fluxo v2 |
+| F4 | `phase-04-orchestration` | 6h | Workflow visual | n8n em Container Apps; orquestra notificação pós-compra |
+| F5 | `phase-05-ai-mcp` | 8h | Inteligência conversacional | MCP server (Function .NET) + chatbot + Gemini 2.0 Flash |
+| F6 | `phase-06-flow-visualizer` | 8h | Observabilidade didática | Flow Visualizer UI com correlation ID animado em tempo real via SignalR |
+| main | merge final | — | Consolidação | Merge F6 → main, retrospectiva, cleanup |
+
+**Total:** 40h (com 4h de buffer para retrospectivas e overhead).
+
+### Padrão de artefatos por fase (6 artefatos, todos obrigatórios)
+
+| Artefato | Audiência | Quando usar |
+|---|---|---|
+| `README.md` | Aluno | Leitura prévia (semana anterior) |
+| `PORTAL-GUIDE.md` | Aluno | Durante o hands-on, segue ao vivo |
+| `SPEAKER-NOTES.md` | Facilitador | Antes (preparo) + durante (referência) |
+| `slides.pdf` / Reveal.js | Apresentação | Durante a aula |
+| `intro-video.mp4` (~5min) | Aluno | Antes da aula (assíncrono) |
+| Branch + workflow CI/CD | Aluno | Hands-on + pós-aula |
+
+> **Padrão pedagógico:** Provisioning de recursos Azure **sempre via Portal passo-a-passo** com prints, durante demo guiada (instrutor projeta, aluno replica). Bicep/IaC vira apêndice opcional ("se sobrar tempo / curiosidade").
+
+---
+
+### 🎯 F1 — Mensageria Desacoplada (fase-piloto detalhada)
+
+**Branch:** `phase-01-servicebus-functions` · **Duração:** 6h · **Pré-req:** subscription Azure + free trial US$200 + C# básico + Git
+
+#### F1.① Objetivos pedagógicos
+
+Ao final, o aluno consegue:
+
+- Diferenciar comunicação **síncrona (HTTP)** vs **assíncrona (queue)** e quando usar cada uma
+- Comparar **Service Bus vs Storage Queue vs Event Grid** (matriz de decisão)
+- Descrever a anatomia do Service Bus: **namespace, queue, topic, subscription, DLQ**
+- Explicar **at-least-once delivery** e por que isso obriga **idempotência no consumer**
+- Usar **Function bindings declarativos** (`[ServiceBusOutput]`, `[ServiceBusTrigger]`)
+- Detectar e mitigar **cold start** do Consumption plan
+- Configurar **lock duration, max delivery count, dead-lettering**
+- Configurar **App Insights** com correlation ID atravessando entry + consumer
+
+#### F1.② Arquitetura técnica delta
+
+```
+[Browser]
+   │ POST /api/v2/purchase
+   ▼
+[Function App: fifa2026-v2-functions (.NET 8 isolated, Consumption)]
+   ├─ PurchaseEntryFunction (HTTP trigger)
+   │     └─ envia msg →
+   │                     [Service Bus Namespace: sb-fifa2026-<aluno> (Standard)]
+   │                       └─ Queue: tickets-purchase (lock 30s, max delivery 10)
+   │                             └─ DLQ auto: tickets-purchase/$DeadLetterQueue
+   └─ PurchaseConsumerFunction (Service Bus trigger)
+         └─ INSERT em SQL Server (mesmo DB do v1)
+              └─ tabela purchases (coluna nova source='v2', correlation_id)
+```
+
+- **Recursos novos:** 1 Function App, 1 Service Bus namespace, 1 queue + DLQ
+- **NÃO toca:** Node API, frontend Vite (só adiciona botão "Comprar v2"), SQL schema só ganha 2 colunas idempotentes
+
+#### F1.③ Endpoints novos
+
+| Verbo | Path | Resposta | Latência alvo |
+|---|---|---|---|
+| `POST` | `/api/v2/purchase` | `{ correlationId: uuid, status: "queued" }` | < 100ms |
+| `GET` | `/api/v2/purchase/{correlationId}` | `{ status: queued\|processing\|completed\|failed, ticketId?: int }` | < 200ms |
+
+Body do POST: `{ matchId: int, category: "VIP"|"Cat1"|"Cat2", userId: int, quantity: int }`.
+
+#### F1.④ Schema delta (migration `phase-01.sql`, idempotente)
+
+```sql
+IF NOT EXISTS (SELECT 1 FROM sys.columns WHERE Name='source' AND Object_ID=Object_ID('purchases'))
+    ALTER TABLE purchases ADD source NVARCHAR(20) NOT NULL DEFAULT 'v1';
+
+IF NOT EXISTS (SELECT 1 FROM sys.columns WHERE Name='correlation_id' AND Object_ID=Object_ID('purchases'))
+    ALTER TABLE purchases ADD correlation_id UNIQUEIDENTIFIER NULL;
+
+IF NOT EXISTS (SELECT 1 FROM sys.indexes WHERE Name='IX_purchases_correlation_id')
+    CREATE INDEX IX_purchases_correlation_id ON purchases(correlation_id) WHERE correlation_id IS NOT NULL;
+```
+
+> Migração rodada em **pré-workshop**, NÃO durante a aula (evita atrito).
+
+#### F1.⑤ GitHub Actions workflow (esqueleto)
+
+```yaml
+name: Deploy Phase 01 — Service Bus + Functions
+on:
+  push:
+    branches: [phase-01-servicebus-functions]
+  workflow_dispatch:
+jobs:
+  build-and-deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-dotnet@v4
+        with: { dotnet-version: '8.0.x' }
+      - run: dotnet publish src/Fifa2026.V2.Functions -c Release -o ./publish
+      - uses: Azure/functions-action@v1
+        with:
+          app-name: ${{ vars.PHASE01_FUNCTION_APP_NAME }}
+          package: ./publish
+          publish-profile: ${{ secrets.PHASE01_FUNCTION_PUBLISH_PROFILE }}
+      - name: Smoke test
+        run: |
+          curl -fsS https://${{ vars.PHASE01_FUNCTION_APP_NAME }}.azurewebsites.net/api/v2/purchase \
+            -H "Content-Type: application/json" \
+            -d '{"matchId":1,"category":"VIP","userId":1,"quantity":1}' | tee response.json
+          jq -e '.correlationId' response.json
+```
+
+#### F1.⑥ Roteiro de aula (6h = 360min)
+
+| # | Bloco | Tempo | Modo | Marco |
+|---|---|---|---|---|
+| 1 | Conceitos (slides): sync vs async, SB vs SQ vs EG, anatomia SB | 50min | Aula expositiva + Q&A | Aluno entende quando usar mensageria |
+| 2 | **Provisioning SB via Portal Azure (passo-a-passo)** | 45min | Demo guiada Portal — instrutor projeta, alunos replicam seguindo `PORTAL-GUIDE.md` | Aluno tem namespace + queue + DLQ visíveis no Portal |
+| 3 | PurchaseEntryFunction (live coding) | 60min | Live coding + replicação | Mensagem chega na queue |
+| ☕ | Coffee break | 15min | — | — |
+| 4 | PurchaseConsumerFunction (live coding) | 60min | Live coding + replicação | Registro grava em SQL com idempotência |
+| 5 | DLQ + Failures lab (forçar exceptions) | 45min | Lab investigativo | Aluno reprocessa mensagem do DLQ |
+| 6 | CI/CD via GitHub Actions + smoke test | 40min | Hands-on | Branch verde com deploy automático |
+| 7 | Retro + Q&A + carry-over para F2 | 45min | Conversa | Aluno pronto para F2 |
+
+#### F1.⑦ DoD do aluno
+
+- [ ] Service Bus namespace + queue + DLQ provisionados **via Portal** (aluno demonstra navegação Portal → SB namespace → queue → DLQ)
+- [ ] `PurchaseEntryFunction` responde `POST /api/v2/purchase` com `correlationId` em < 100ms
+- [ ] Mensagem visível na queue (Service Bus Explorer)
+- [ ] `PurchaseConsumerFunction` consome e grava em `purchases` com `source='v2'`
+- [ ] Teste de idempotência: mesma mensagem 2x = 1 registro
+- [ ] Teste de falha: mensagem com `matchId` inválido vai para DLQ após 10 entregas
+- [ ] App Insights mostra trace com correlationId atravessando entry + consumer
+- [ ] GitHub Actions workflow do branch `phase-01-servicebus-functions` em verde
+
+#### F1.⑧ Troubleshooting esperado (mapa antecipado)
+
+| Sintoma | Causa provável | Mitigação |
+|---|---|---|
+| Função não consome mensagem | Connection string com `EntityPath=...` no App Setting (deveria ser sem) | Remover `EntityPath`, deixar só no atributo do binding |
+| Mensagem reentrega infinita | Lock duration < tempo de processamento | Aumentar para 60s ou chamar `RenewLockAsync` |
+| `CommandTimeout` no SQL | Connection pool exaurido | `MaxConcurrentCalls=4` no `host.json` |
+| Cold start de 10s na 1ª chamada | Consumption plan free | Aceitar (didático); Premium não nesta fase |
+| 401 ao chamar Function | `authLevel: Function` sem chave no header | Usar `authLevel: Anonymous` em F1 (segurança vira F2) |
+| Mensagem como string vs JSON | Content-Type errado no send | Forçar `application/json` no `ServiceBusMessage` |
+| Erro "Managed Identity not enabled" | Tentativa precoce de usar MI | F1 usa connection string; MI fica para F3 |
+| `purchase` table not found | Nome real é `purchases` (minúsculo) | Confirmar e padronizar |
+
+#### F1.⑨ Esqueletos `SPEAKER-NOTES.md` e `PORTAL-GUIDE.md`
+
+**`SPEAKER-NOTES.md` (excerto Bloco 2):**
+
+```markdown
+# SPEAKER NOTES — F1, Bloco 2: Provisioning Service Bus
+
+**Duração:** 45min (±5min)
+**Objetivo:** turma sai com namespace + queue + DLQ funcionando
+
+## Pontos a enfatizar
+- "Standard tier libera topics — em Basic só queue"
+- "Lock duration 30s é default; em produção depende do tempo de processamento"
+- "DLQ é AUTOMÁTICA — não precisa criar, basta consumir de `<queue>/$DeadLetterQueue`"
+
+## Perguntas pra turma (escolher 1-2)
+- "Quem aqui já usou RabbitMQ ou Kafka? Vamos comparar."
+- "Por que escolheriam Standard em vez de Premium aqui?"
+
+## Armadilhas (acompanhar)
+- ⚠️ Região errada — East US 2 é o padrão do workshop
+- ⚠️ Naming: namespace tem que ser globally unique
+- ⚠️ Pricing tier: alguns escolherão Basic; reforçar Standard
+
+## Se sobrar tempo (15min)
+- Service Bus Explorer enviando mensagem manual
+- Métricas no Portal (mensagens ativas, DLQ count)
+
+## Se faltar tempo (-10min)
+- Pular Standard vs Premium (mencionar e seguir)
+- Pular Bicep teaser do apêndice
+
+## Transição para Bloco 3
+"Recursos criados. Agora vamos escrever a Function que vai publicar mensagens nessa queue."
+```
+
+**`PORTAL-GUIDE.md` (excerto, primeiros steps):**
+
+```markdown
+# PORTAL GUIDE — F1: Provisioning Service Bus
+
+**Pré-req:** Azure subscription ativa, login em portal.azure.com
+
+## Step 1 — Criar Resource Group (3min)
+1. Portal → busca → "Resource groups"
+2. `+ Create`
+3. Subscription: <sua>
+4. Resource group name: `rg-fifa2026-workshop-<iniciais>`
+5. Region: **East US 2** (padrão do workshop)
+6. `Review + create` → `Create`
+[PRINT: tela final do RG]
+
+## Step 2 — Criar Service Bus Namespace (8min)
+1. Portal → busca → "Service Bus"
+2. `+ Create`
+3. Subscription / Resource group: do Step 1
+4. Namespace name: `sb-fifa2026-<iniciais>-<3 dígitos>` (único global)
+5. Location: **East US 2**
+6. Pricing tier: **Standard** ⚠️ (não Basic)
+7. `Review + create` → `Create` (~2min)
+[PRINT: namespace criado]
+
+## Step 3 — Criar Queue `tickets-purchase` (4min)
+[... steps continuam ...]
+
+## Step 4 — Copiar Connection String (3min)
+[... steps continuam ...]
+
+## Validation
+✅ Namespace visível no RG
+✅ Queue `tickets-purchase` listada
+✅ DLQ `tickets-purchase/$DeadLetterQueue` visível em Service Bus Explorer
+✅ Connection string copiada
+```
+
+> F1 completa. **F2-F6 herdam o mesmo molde** (9 sub-itens) e o mesmo padrão de 6 artefatos.
+
+---
+
+### F2 — Gateway Profissional (esqueleto)
+
+**Branch:** `phase-02-apim` · **Duração:** 6h · **Novidade:** APIM Developer + policies
+
+**Escopo:** introduzir APIM Developer compartilhado (1 instância para a turma, products/subscriptions/keys por aluno) à frente das Functions de F1. Ensinar policies (`rate-limit-by-key`, `cache-lookup`/`cache-store`, `validate-jwt`, `cors`, `set-header`, `rewrite-uri`). Aluno cria um produto, atribui sua function como API backend, gera subscription key, testa via Postman/curl.
+
+**DoD aluno (resumo):** consegue chamar compra v2 via URL do APIM, ver policy de rate-limit-by-key bater, ver cache responder em 2ª chamada, ver tracing end-to-end no APIM "Test" console + App Insights.
+
+### F3 — Identidade Moderna (esqueleto)
+
+**Branch:** `phase-03-identity` · **Duração:** 6h · **Novidade:** External ID (customer) + App Registration (admin)
+
+**Escopo:** introduzir Microsoft Entra External ID como provedor de identidade no fluxo v2 (substitui o JWT bcrypt+local do v1, que permanece intacto para comparação). App Registration interno para camada admin do sistema. APIM passa a validar tokens do External ID via `validate-jwt` apontando para o discovery do issuer. **Decisão arquitetural pendente:** mapping entre IDs Entra (GUID) e IDs locais (int) — discutir com `@architect` durante a fase.
+
+**DoD aluno (resumo):** login social via External ID → recebe token → chama APIM → policy valida JWT → Function v2 grava purchase com `entra_user_id`.
+
+### F4 — Workflow Visual (esqueleto)
+
+**Branch:** `phase-04-orchestration` · **Duração:** 6h · **Novidade:** n8n self-hosted em Azure Container Apps
+
+**Escopo:** subir n8n via container em Azure Container Apps (Consumption plan, basic auth obrigatório). Orquestração: após compra v2 ser consumida e gravada, Function consumer dispara webhook n8n → workflow visual: (a) log estruturado, (b) e-mail mock (SendGrid free tier ou MailHog), (c) post em endpoint externo (httpbin), (d) opção condicional (se VIP, enviar a webhook diferente). Aluno aprende workflow automation low-code + container hosting.
+
+**DoD aluno (resumo):** n8n acessível em URL HTTPS dedicada, workflow visualmente desenhado, executa quando recebe webhook, histórico de execuções visível no n8n UI.
+
+### F5 — Inteligência Conversacional (esqueleto)
+
+**Branch:** `phase-05-ai-mcp` · **Duração:** 8h · **Novidade:** MCP server + chatbot frontend + Gemini 2.0 Flash
+
+**Escopo:** Function .NET dedicada vira MCP server expondo 3 tools: `consultar_disponibilidade(jogo)`, `verificar_ingresso(qr)`, `consultar_bracket(rodada)`. Componente React de chatbot no frontend conversa com Gemini 2.0 Flash; Gemini chama o MCP server via JSON-RPC quando precisa de dados; respostas chegam ao usuário. Conteúdo bônus: trocar Gemini por Groq/Llama via env var (portabilidade entre LLMs).
+
+**DoD aluno (resumo):** pergunta "tem ingresso pra Brasil x Argentina dia 15?" no chat → bot consulta SQL via MCP → responde com disponibilidade + categorias + preços.
+
+### F6 — Observabilidade Didática (esqueleto)
+
+**Branch:** `phase-06-flow-visualizer` · **Duração:** 8h · **Novidade:** Flow Visualizer UI com correlation ID animado em tempo real
+
+**Escopo:** nova rota `/flow` no frontend Vite. Diagrama dos componentes (APIM, Function entry, Service Bus, Function consumer, n8n, SQL) como nós. Ao executar compra v2, "bolinha" animada percorre o diagrama em tempo real, alimentada por SignalR. Backend: Function dedicada que consulta App Insights via SDK por correlation ID e empurra eventos via SignalR. Animação com framer-motion.
+
+**DoD aluno (resumo):** compra v2 → vê bolinha percorrer APIM → SB → Function → n8n → SQL com tempo gasto em cada nó e payload inspecionável.
+
+---
+
+## 5. Estratégia de Branching + CI/CD
+
+### Modelo linear cumulativo
+
+```
+main ──────────────────────────────────────────────── (estado pré-workshop, EPIC-001 done)
+  └─ phase-01-servicebus-functions ──────────────────
+       └─ phase-02-apim ──────────────────────────────
+            └─ phase-03-identity ─────────────────────
+                 └─ phase-04-orchestration ───────────
+                      └─ phase-05-ai-mcp ─────────────
+                           └─ phase-06-flow-visualizer
+                                └─ merge → main (pós-workshop)
+```
+
+### Regras
+
+- Cada branch tem seu próprio workflow `.github/workflows/deploy-phase-NN.yml`
+- Cada fase deploya em recursos dedicados (slot OU resource group próprio): `fifa2026-web-phaseNN.azurewebsites.net`
+- Aluno faz fork ou usa devcontainer pré-configurado
+- Tag automática `vN.0.0-phaseNN` ao merge
+- `main` é **congelada** durante o workshop (sem hotfixes em paralelo)
+
+### Risco e mitigação
+
+**Risco:** divergência entre fases se houver hotfix em F1 após F2 ser criada.
+**Mitigação:** cherry-pick e rebase explícitos em script de bootstrap de cada fase (que reseta o estado para o aluno).
+
+---
+
+## 6. Flow Visualizer — Especificação
+
+### Mecânica visual
+
+- Tela única (`/flow`) com diagrama dos componentes como nós
+- Compra v2 dispara "bolinha" animada percorrendo o diagrama em tempo real
+- Cada nó mostra: tempo gasto, status (ok/erro), payload (clicável)
+- Histórico das últimas 50 compras, pesquisável por correlation ID
+
+### Mecânica técnica
+
+- Componentes emitem eventos para App Insights com correlation ID propagado (W3C Trace Context)
+- Endpoint `/api/flow/{correlationId}` em Function dedicada consulta App Insights via SDK
+- **SignalR (Azure SignalR Service free tier — 20 conexões)** com fallback polling 2s se necessário
+- Animação: framer-motion na stack atual (React 18)
+
+### Por que é a estrela didática
+
+Ensina em um só lugar: **distributed tracing, correlation IDs, observabilidade, mensageria assíncrona e UX de devtools** — todos os meta-conceitos que justificam cada peça do stack.
+
+---
+
+## 7. LLM Strategy + MCP
+
+### Provider padrão: Google Gemini 2.0 Flash
+
+| Fator | Valor |
+|---|---|
+| Free tier | 15 RPM · 1.5K req/dia · 1M tokens/dia |
+| Cartão de crédito | Não exigido |
+| Latência | ~500ms |
+| Estabilidade | Alta |
+
+### MCP server como abstração
+
+- 3 tools expostas: `consultar_disponibilidade(jogo)`, `verificar_ingresso(qr)`, `consultar_bracket(rodada)`
+- Implementado em Function .NET dedicada (parte de F5)
+- Conversa via JSON-RPC com qualquer LLM compatível com MCP
+
+### Conteúdo pedagógico bônus
+
+Trocar LLM por env var (Gemini → Groq → Mistral) sem mexer no código do chatbot. Ensina **portabilidade entre LLMs via protocolo aberto**.
+
+### Plano B (caso Gemini caia em aula)
+
+- Groq (Llama 3.x) como fallback documentado
+- Cache de respostas para queries comuns (degradação graciosa)
+
+---
+
+## 8. Identity Strategy
+
+### Camada customer: Microsoft Entra External ID
+
+- Free tier 50K MAU (mais que suficiente para evento)
+- OIDC / OAuth2 padrão
+- Social login (Google, Microsoft, Apple) configurável
+- Substitui o `JWT + bcrypt local` apenas no fluxo v2 (v1 mantém para comparação didática)
+
+### Camada admin: App Registration (Entra ID interno)
+
+- OAuth2 Authorization Code Flow
+- Roles via App Roles (Admin, Operator, Viewer)
+- Tokens validados via APIM `validate-jwt` policy
+
+### Decisão arquitetural pendente
+
+> **Como mapear IDs do Entra (GUID) para IDs locais (int) na tabela `purchases`?**
+> Opções: (a) tabela `user_identity_mapping` com pares (entra_oid ↔ user_id local); (b) coluna `entra_oid` direto em `users`; (c) duplicar registro de usuário em v2.
+> **Responsável:** `@architect` durante F3 design.
+
+---
+
+## 9. Riscos + Mitigações
+
+| # | Risco | Impacto | Mitigação |
+|---|---|---|---|
+| 1 | Custo Azure ultrapassa budget do evento | Alto | APIM compartilhado + Budget Alert + script teardown ao final |
+| 2 | Atrito de setup External ID em F3 | Médio | Tenant External ID pré-criado pelo instrutor, fornecido aos alunos |
+| 3 | n8n exposto sem auth na free config | Alto | Basic auth obrigatório no provisioning; documentado em PORTAL-GUIDE |
+| 4 | MCP é tecnologia recente — quebra de spec | Médio | Pinning de versão do SDK MCP em todas as fases |
+| 5 | Drift entre branches (hotfix em F1 após F2 criada) | Médio | Congelar `main` pré-workshop; cherry-pick scriptado |
+| 6 | Mapping de IDs Entra ↔ local | Médio | Decisão arquitetural junto com `@architect` em F3 |
+| 7 | 40h de workshop causa fadiga | Médio | Formato sugerido: 4 finais-de-semana × 10h ou 5 dias × 8h |
+| 8 | Gemini cai durante aula F5 | Alto | Fallback Groq + cache local pré-configurado |
+| 9 | Cold start de Functions trava demo ao vivo | Baixo | Warmup automático 5min antes de cada bloco hands-on |
+| 10 | Alunos não cumprem pré-req (sem subscription Azure) | Médio | Checklist enviado 1 semana antes; bootcamp de setup opcional 2h antes |
+
+---
+
+## 10. Cost Model (detalhe)
+
+### Estimativa por aluno em 40h
+
+| Recurso | Custo estimado | Observação |
+|---|---|---|
+| Function App (Consumption) | ~US$0 | Dentro de 1M execuções/mês |
+| Service Bus Standard | ~US$2-5 | Pro-rata para 1-2 meses |
+| Container App (n8n) | ~US$3-8 | Consumption scale-to-zero |
+| SQL Server | US$0 | Compartilhado com app existente |
+| App Insights | US$0-2 | Pay-per-GB ingerido |
+| SignalR Service | US$0 | Free tier 20 conexões |
+| Storage (Function backing) | ~US$0.50 | Trivial |
+| **Total por aluno** | **~US$5-15** | — |
+
+### Custo compartilhado (todo o evento)
+
+| Recurso | Custo |
+|---|---|
+| APIM Developer (1 instância) | ~US$50-80 (pro-rata 1-2 meses) |
+| Tenant External ID | US$0 |
+| Domínio personalizado (opcional) | ~US$12/ano |
+| **Total compartilhado** | **~US$50-95** |
+
+### Guard rails obrigatórios
+
+- Azure Budget Alert: US$30 por aluno (alerta em 80%)
+- Script `teardown.ps1` destruindo RG inteiro ao final (entregue como story extra)
+- Pre-flight checklist: aluno confirma free trial US$200 ativo
+
+---
+
+## 11. Próximos Passos — Handoff para `@pm`
+
+Este blueprint está pronto para virar epic. Sugerido:
+
+### EPIC-002 — Living Lab Workshop Azure-Native
+
+**Stories propostas (7):**
+
+| Story | Título | Tipo | Pré-req |
+|---|---|---|---|
+| 2.1 | F1 — Service Bus + Functions | Phase | EPIC-001 done |
+| 2.2 | F2 — APIM Developer + policies | Phase | 2.1 |
+| 2.3 | F3 — External ID + App Registration | Phase | 2.2 |
+| 2.4 | F4 — n8n em Container Apps | Phase | 2.3 |
+| 2.5 | F5 — MCP server + chatbot + Gemini | Phase | 2.4 |
+| 2.6 | F6 — Flow Visualizer | Phase | 2.5 |
+| 2.7 | Materiais didáticos + speaker notes (transversal) | Documentation | paralelo |
+
+**Handoff YAML gerado em:** `.aiox/handoffs/handoff-2026-05-24-analyst-to-pm-living-lab.yaml`
+
+---
+
+## 12. Apêndice — FAQs e Decisões Acumuladas
+
+### Decisões fechadas nesta sessão (10/10)
+
+| # | Decisão | Resolução |
+|---|---|---|
+| 1 | Hospedagem n8n | Azure Container Apps (Consumption) com basic auth |
+| 2 | LLM padrão | Gemini 2.0 Flash + MCP para portabilidade |
+| 3 | Quantas fases | 6 (F1-F6) + merge final |
+| 4 | Escopo External ID | Substitui JWT só no v2; v1 mantém p/ comparação |
+| 5 | Tools do MCP | `consultar_disponibilidade`, `verificar_ingresso`, `consultar_bracket` |
+| 6 | Flow Visualizer real-time | SignalR free tier + fallback polling |
+| 7 | Custo + APIM | Developer compartilhado, products/subs por aluno |
+| 8 | Pré-req aluno | C# básico + Git + Azure free trial US$200 |
+| 9 | Audiência | Devs polyglot com background cloud (não exige .NET prévio) |
+| 10 | Material por fase | 6 artefatos: README + PORTAL-GUIDE + SPEAKER-NOTES + slides + vídeo + branch |
+
+### Decisões pendentes (carry-forward para fases específicas)
+
+| Decisão | Quando resolver | Responsável |
+|---|---|---|
+| Mapping IDs Entra ↔ local | F3 design | `@architect` |
+| Formato calendário (4×10h ou 5×8h) | Pré-evento | `@pm` |
+| Custom domain APIM (opcional) | Pré-evento | `@devops` |
+| Pinning de versão MCP SDK | F5 design | `@architect` |
+
+### FAQ antecipado para alunos
+
+- **Q:** Preciso saber .NET pra fazer o workshop?
+  **A:** Não. Demonstramos com .NET 8, mas você só precisa C# básico (variáveis, métodos, async/await). O conteúdo Azure é o foco.
+
+- **Q:** Tenho subscription Azure pessoal?
+  **A:** Sim. O free trial US$200 da Microsoft cobre o evento. Sem cartão? Não dá pra ativar — solicite com 1 semana de antecedência.
+
+- **Q:** Sou de infra/ops, posso participar?
+  **A:** Sim. Você vai ver IaC (apêndice Bicep), CI/CD, observabilidade, segurança — todos centrais ao papel.
+
+- **Q:** O app vai ficar no ar depois?
+  **A:** A versão merged em `main` fica no ar até a próxima Copa. Sua versão pessoal você destrói com `teardown.ps1`.
+
+---
+
+**Documento gerado em sessão de co-design facilitada por Atlas (Analyst). Pronto para handoff a `@pm`.**
